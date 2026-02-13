@@ -18,7 +18,9 @@ const emptyUserForm = {
 
 const emptyStreamForm = {
   camera_id: "",
-  stream_url: ""
+  stream_url: "",
+  confidence_threshold: 0.8,
+  fps: 30
 };
 
 const formatDateTime = (value) => {
@@ -229,7 +231,9 @@ export default function App() {
 
     const payload = {
       camera_id: streamForm.camera_id ? Number(streamForm.camera_id) : null,
-      stream_url: streamForm.stream_url || null
+      stream_url: streamForm.stream_url || null,
+      confidence_threshold: streamForm.confidence_threshold,
+      fps: streamForm.fps
     };
 
     if (!payload.camera_id && !payload.stream_url) {
@@ -241,6 +245,8 @@ export default function App() {
     const params = new URLSearchParams();
     if (payload.camera_id) params.set("camera_id", payload.camera_id);
     if (payload.stream_url) params.set("stream_url", payload.stream_url);
+    params.set("confidence_threshold", payload.confidence_threshold);
+    params.set("fps", payload.fps);
 
     const fullUrl = `${streamUrl}?${params.toString()}`;
     const eventSource = new EventSource(fullUrl);
@@ -434,6 +440,37 @@ export default function App() {
                   })
                 }
                 placeholder="http://192.168.29.232:8080/video"
+              />
+            </label>
+            <label>
+              Confidence Threshold
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={streamForm.confidence_threshold}
+                onChange={(event) =>
+                  setStreamForm({
+                    ...streamForm,
+                    confidence_threshold: Number(event.target.value)
+                  })
+                }
+              />
+            </label>
+            <label>
+              FPS (1-60)
+              <input
+                type="number"
+                min="1"
+                max="60"
+                value={streamForm.fps}
+                onChange={(event) =>
+                  setStreamForm({
+                    ...streamForm,
+                    fps: Number(event.target.value)
+                  })
+                }
               />
             </label>
           </div>

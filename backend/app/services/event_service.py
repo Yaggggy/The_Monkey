@@ -21,6 +21,7 @@ class EventService:
 		return self.repo.list_by_camera(db, camera_id, skip=skip, limit=limit)
 
 	def create_event(self, db: Session, payload: EventCreate) -> Event:
+		now = datetime.now()
 		event = Event(
 			camera_id=payload.camera_id,
 			user_id=payload.user_id,
@@ -28,6 +29,7 @@ class EventService:
 			confidence=payload.confidence,
 			image_path=payload.image_path,
 			payload=payload.payload,
+			occurred_at=now,
 		)
 		return self.repo.create(db, event)
 
@@ -38,6 +40,7 @@ class EventService:
 		user_id: int | None,
 		detections: List[Dict[str, Any]],
 	) -> List[Event]:
+		now = datetime.now()
 		events = [
 			Event(
 				camera_id=camera_id,
@@ -45,6 +48,7 @@ class EventService:
 				label=det["label"],
 				confidence=float(det["confidence"]),
 				payload={"bbox": det["bbox"]},
+				occurred_at=now,
 			)
 			for det in detections
 		]

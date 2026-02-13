@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency
 	cv2 = None
 
 from app.api.deps import get_current_user, get_db_session
+from app.db.session import SessionLocal
 from app.schemas.event import (
 	EventCreate,
 	EventRead,
@@ -198,6 +199,8 @@ def infer_from_stream(
 def start_live_stream(
 	stream_url: str | None = None,
 	camera_id: int | None = None,
+	confidence_threshold: float = 0.8,
+	fps: int = 30,
 	db: Session = Depends(get_db_session),
 ):
 	if camera_id is not None:
@@ -208,41 +211,75 @@ def start_live_stream(
 
 	if not stream_url:
 		raise HTTPException(status_code=400, detail="stream_url or camera_id is required")
+	
+	if not (0.0 <= confidence_threshold <= 1.0):
+		raise HTTPException(status_code=400, detail="confidence_threshold must be between 0 and 1")
+	
+	if not (1 <= fps <= 60):
+		raise HTTPException(status_code=400, detail="fps must be between 1 and 60")
+	
+	frame_delay = 1.0 / fps
 
 	def generate_frames():
 		if cv2 is None:
 			yield f"data: {{\"error\": \"OpenCV not installed\"}}\n\n"
 			return
 
-		cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-		if not cap.isOpened():
-			yield f"data: {{\"error\": \"Failed to open stream\"}}\n\n"
-			return
-
+		cap = None
 		inference = get_inference_service()
 		frame_count = 0
+		failed_frames = 0
+		max_failed_frames = 30
+		
+		# Detection tracking for debouncing
+		detection_tracker = {}  # {label: {"count": int, "last_saved": float, "detections": []}}
+		confirmation_threshold = 3  # Need 3 consecutive detections to save
+		save_cooldown = 5.0  # Don't save same label within 5 seconds
 
 		try:
+			cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+			if not cap.isOpened():
+				yield f"data: {{\"error\": \"Failed to open stream\"}}\n\n"
+				return
+
 			while True:
 				ok, frame = cap.read()
 				if not ok or frame is None:
+					failed_frames += 1
+					if failed_frames >= max_failed_frames:
+						yield f"data: {{\"error\": \"Camera disconnected - too many failed frames\"}}\n\n"
+						break
 					time.sleep(0.1)
 					continue
 
+				failed_frames = 0
 				frame_count += 1
-				if frame_count % 3 != 0:
+				if frame_count % 5 != 0:  # Check every 5th frame instead of 3rd for efficiency
+					time.sleep(frame_delay)
 					continue
 
 				frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 				pil_image = Image.fromarray(frame_rgb)
 
 				detections = inference.predict(pil_image)
-
+				
+				# Filter by confidence threshold and ensure null-safety
+				filtered_detections = []
 				if detections:
-					for detection in detections:
-						x1, y1, x2, y2 = map(int, detection["bbox"])
-						label = detection["label"]
-						conf = detection["confidence"]
+					filtered_detections = [
+						d for d in detections 
+						if d.get("confidence", 0) >= confidence_threshold
+					]
+
+				# Track current frame's labels
+				current_labels = set()
+				
+				if filtered_detections:
+					for detection in filtered_detections:
+						x1, y1, x2, y2 = map(int, detection.get("bbox", [0, 0, 0, 0]))
+						label = detection.get("label", "unknown")
+						conf = detection.get("confidence", 0.0)
+						current_labels.add(label)
 
 						cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 						cv2.putText(
@@ -254,24 +291,78 @@ def start_live_stream(
 							(0, 0, 255),
 							2,
 						)
-
-					service.create_events_from_detections(
-						db, camera_id=camera_id, user_id=None, detections=detections
-					)
+						
+						# Update detection tracker
+						if label not in detection_tracker:
+							detection_tracker[label] = {
+								"count": 1,
+								"last_saved": 0,
+								"detections": [detection]
+							}
+						else:
+							detection_tracker[label]["count"] += 1
+							detection_tracker[label]["detections"].append(detection)
+							# Keep only recent detections
+							if len(detection_tracker[label]["detections"]) > confirmation_threshold:
+								detection_tracker[label]["detections"] = detection_tracker[label]["detections"][-confirmation_threshold:]
+					
+					# Check which detections should be saved to DB
+					current_time = time.time()
+					detections_to_save = []
+					
+					for label in current_labels:
+						tracker = detection_tracker[label]
+						time_since_last_save = current_time - tracker["last_saved"]
+						
+						# Save if: confirmed (3+ consecutive) AND cooldown period has passed
+						if tracker["count"] >= confirmation_threshold and time_since_last_save >= save_cooldown:
+							detections_to_save.extend(tracker["detections"])
+							tracker["last_saved"] = current_time
+							tracker["count"] = 0  # Reset counter after saving
+					
+					# Save confirmed detections to DB
+					if detections_to_save:
+						db_session = SessionLocal()
+						try:
+							service.create_events_from_detections(
+								db_session, camera_id=camera_id, user_id=None, detections=detections_to_save
+							)
+							db_session.commit()
+						except Exception:
+							db_session.rollback()
+						finally:
+							db_session.close()
+				
+				# Reset counters for labels not detected in current frame
+				labels_to_remove = []
+				for label in detection_tracker:
+					if label not in current_labels:
+						detection_tracker[label]["count"] = 0
+						detection_tracker[label]["detections"] = []
+						# Remove from tracker if not seen for >30 seconds
+						if time.time() - detection_tracker[label]["last_saved"] > 30:
+							labels_to_remove.append(label)
+				
+				for label in labels_to_remove:
+					del detection_tracker[label]
 
 				_, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
 				frame_base64 = base64.b64encode(buffer).decode("utf-8")
 
 				detection_data = [
-					{"label": d["label"], "confidence": d["confidence"]} for d in detections
+					{"label": d.get("label", "unknown"), "confidence": d.get("confidence", 0.0)} 
+					for d in (filtered_detections or [])
 				]
 
 				yield f"data: {{\"frame\": \"{frame_base64}\", \"detections\": {json.dumps(detection_data)}}}\n\n"
 
-				time.sleep(0.033)
+				time.sleep(frame_delay)
 		except GeneratorExit:
 			pass
+		except Exception as e:
+			yield f"data: {{\"error\": \"Stream error: {str(e)}\"}}\n\n"
 		finally:
-			cap.release()
+			if cap is not None:
+				cap.release()
 
 	return StreamingResponse(generate_frames(), media_type="text/event-stream")
