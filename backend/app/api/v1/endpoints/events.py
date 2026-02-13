@@ -1,6 +1,8 @@
 import base64
+from datetime import datetime
 from io import BytesIO
 import json
+from pathlib import Path
 import time
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -26,6 +28,12 @@ from app.schemas.event import (
 from app.services.camera_service import CameraService
 from app.services.event_service import EventService
 from app.services.inference_service import get_inference_service
+from app.core.config import get_settings
+
+settings = get_settings()
+BASE_DIR = Path(__file__).resolve().parents[4]
+DETECTION_IMAGES_DIR = BASE_DIR / "detection_images"
+DETECTION_IMAGES_DIR.mkdir(exist_ok=True)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 service = EventService()
@@ -322,6 +330,18 @@ def start_live_stream(
 					
 					# Save confirmed detections to DB
 					if detections_to_save:
+						# Save frame with detections locally
+						timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+						labels_str = "_".join(sorted(set(d.get("label", "unknown") for d in detections_to_save)))
+						cam_str = f"cam{camera_id}" if camera_id else "nocam"
+						filename = f"{timestamp}_{cam_str}_{labels_str}.jpg"
+						image_path = DETECTION_IMAGES_DIR / filename
+						
+						try:
+							cv2.imwrite(str(image_path), frame)
+						except Exception:
+							pass  # Don't fail stream if image save fails
+						
 						db_session = SessionLocal()
 						try:
 							service.create_events_from_detections(
