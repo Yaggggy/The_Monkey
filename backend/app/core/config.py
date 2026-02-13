@@ -50,7 +50,14 @@ class Settings(BaseSettings):
 	SNS_TOPIC_ARN: str = ""
 	REDIS_URL: str = ""
 
-	CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"])
+	CORS_ORIGINS: List[str] = Field(
+		default_factory=lambda: [
+			"http://localhost:3000",
+			"http://127.0.0.1:3000",
+			"http://localhost:5173",
+			"http://127.0.0.1:5173",
+		]
+	)
 
 
 @lru_cache

@@ -24,3 +24,6 @@ class UserService:
             is_active=payload.is_active,
         )
         return self.repo.create(db, user)
+
+    def delete_user(self, db: Session, user: User) -> None:
+        self.repo.delete(db, user)
