@@ -50,6 +50,16 @@ class Settings(BaseSettings):
 	SNS_TOPIC_ARN: str = ""
 	REDIS_URL: str = ""
 
+	EMAIL_NOTIFICATIONS_ENABLED: bool = False
+	ALERT_EMAIL_TO: str = "yagyansh.singh.cse.2022@miet.ac.in"
+	ALERT_EMAIL_FROM: str = "yagyanshsinghdeshwal@gmail.com"
+	SMTP_HOST: str = "smtp.gmail.com"
+	SMTP_PORT: int = 587
+	SMTP_USERNAME: str = ""
+	SMTP_PASSWORD: str = ""
+	SMTP_USE_TLS: bool = True
+	SMTP_TIMEOUT_SECONDS: int = 15
+
 	CORS_ORIGINS: List[str] = Field(
 		default_factory=lambda: [
 			"http://localhost:3000",

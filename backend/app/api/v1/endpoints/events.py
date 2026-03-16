@@ -335,17 +335,22 @@ def start_live_stream(
 						labels_str = "_".join(sorted(set(d.get("label", "unknown") for d in detections_to_save)))
 						cam_str = f"cam{camera_id}" if camera_id else "nocam"
 						filename = f"{timestamp}_{cam_str}_{labels_str}.jpg"
-						image_path = DETECTION_IMAGES_DIR / filename
+						absolute_image_path = DETECTION_IMAGES_DIR / filename
+						stored_image_path = str(Path("detection_images") / filename)
 						
 						try:
-							cv2.imwrite(str(image_path), frame)
+							cv2.imwrite(str(absolute_image_path), frame)
 						except Exception:
 							pass  # Don't fail stream if image save fails
 						
 						db_session = SessionLocal()
 						try:
 							service.create_events_from_detections(
-								db_session, camera_id=camera_id, user_id=None, detections=detections_to_save
+								db_session,
+								camera_id=camera_id,
+								user_id=None,
+								detections=detections_to_save,
+								image_path=stored_image_path,
 							)
 							db_session.commit()
 						except Exception:
