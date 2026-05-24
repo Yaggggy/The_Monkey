@@ -203,6 +203,38 @@ def infer_from_stream(
 	return InferenceResponse(detections=detections)
 
 
+@router.get("/test-stream")
+def test_stream_endpoint(
+	stream_url: str | None = None,
+	camera_id: int | None = None,
+):
+	"""Test if a stream is accessible and return snapshot info."""
+	if camera_id is not None:
+		db = SessionLocal()
+		try:
+			camera = camera_service.get_camera(db, camera_id)
+			if not camera or not camera.stream_url:
+				raise HTTPException(status_code=404, detail="Camera stream not found")
+			stream_url = camera.stream_url
+		finally:
+			db.close()
+
+	if not stream_url:
+		raise HTTPException(status_code=400, detail="stream_url or camera_id is required")
+
+	try:
+		image = _fetch_snapshot(stream_url)
+		return {
+			"status": "success",
+			"stream_url": stream_url,
+			"image_size": image.size,
+			"image_format": image.format or "JPEG",
+			"message": "Stream is accessible and working"
+		}
+	except Exception as e:
+		raise HTTPException(status_code=400, detail=f"Stream test failed: {str(e)}")
+
+
 @router.get("/live-stream")
 def start_live_stream(
 	stream_url: str | None = None,
@@ -238,16 +270,35 @@ def start_live_stream(
 		frame_count = 0
 		failed_frames = 0
 		max_failed_frames = 30
+		reconnection_attempts = 0
+		max_reconnection_attempts = 5
 		
 		# Detection tracking for debouncing
 		detection_tracker = {}  # {label: {"count": int, "last_saved": float, "detections": []}}
 		confirmation_threshold = 3  # Need 3 consecutive detections to save
 		save_cooldown = 5.0  # Don't save same label within 5 seconds
 
-		try:
+		def open_stream():
+			"""Attempt to open the video stream with retry logic."""
+			nonlocal reconnection_attempts
 			cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-			if not cap.isOpened():
-				yield f"data: {{\"error\": \"Failed to open stream\"}}\n\n"
+			if cap.isOpened():
+				reconnection_attempts = 0
+				return cap
+			
+			# Try alternative approach with ffmpeg
+			if reconnection_attempts < max_reconnection_attempts:
+				reconnection_attempts += 1
+				cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+				if cap.isOpened():
+					return cap
+			
+			return None
+
+		try:
+			cap = open_stream()
+			if cap is None:
+				yield f"data: {{\"error\": \"Failed to open stream after multiple attempts. Check stream URL: {stream_url}\"}}\n\n"
 				return
 
 			while True:
@@ -255,8 +306,15 @@ def start_live_stream(
 				if not ok or frame is None:
 					failed_frames += 1
 					if failed_frames >= max_failed_frames:
-						yield f"data: {{\"error\": \"Camera disconnected - too many failed frames\"}}\n\n"
-						break
+						# Try to reconnect
+						if cap:
+							cap.release()
+						cap = open_stream()
+						if cap is None:
+							yield f"data: {{\"error\": \"Camera disconnected. Reconnection failed after {max_reconnection_attempts} attempts\"}}\n\n"
+							break
+						failed_frames = 0
+						continue
 					time.sleep(0.1)
 					continue
 
